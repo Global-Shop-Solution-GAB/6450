@@ -1,0 +1,1787 @@
+﻿Program.Sub.Preflight.Start
+Program.External.Include.Library("ORDUPL.lib")
+V.Global.sErrorFile.Declare(String, "")
+V.Global.sErrorLog.Declare(String, "")
+V.Global.sRegFile.Declare(String, "")
+V.Global.sRegLog.Declare(String, "")
+V.Global.sIsRunning.Declare(String, "")
+V.Global.bNewOrders.Declare(Boolean, False)
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Customer:
+'Developer: FEQ (Sisco)
+'Date: 07/28/2021
+'This project will collect orders from the Magnuson website and create them in their GSS.
+'This is intended to run from the Online Update and uses the Web Importer
+'The initialization process will include verifying the web importer license and setup, as well as verify/create directory for processing errors and logs
+'This will make use of the ORDUPL.lib to help with the web importer import files
+'The program will keep track of what orders have been created, and when new orders are created, an email will be sent out to users to notify them when new orders are made
+
+F.Intrinsic.Control.Try
+
+'If they are running this manually, lets show them a wait dialog
+F.Intrinsic.Control.If(V.Caller.Switches, =, "M")
+	F.Intrinsic.UI.InvokeWaitDialog("Orders being processed from magnuson shopify website")
+F.Intrinsic.Control.EndIf
+
+'Initia(liza)tion. Within this subroutine, we verify the directories for the program exist, as well as see if the program is currently running, and check for the params file for the web importer, as well as set up the logging file to be used for the program
+F.Intrinsic.Control.CallSub(Initialization)
+
+'We grab the existing orders from the custom xref table in GSS
+F.Intrinsic.Control.CallSub(GSSInfo)
+
+'Grab information from the shopify web API
+F.Intrinsic.Control.CallSub(GatheringWebInfo)
+
+'Close out stuff and send out emails
+F.Intrinsic.Control.CallSub(ProcessComplete)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.Try
+
+F.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.Unload.End
+
+Program.Sub.ErrorLog.Start
+F.Intrinsic.Control.Try
+
+'F.Intrinsic.UI.Msgbox(V.Global.sErrorLog)
+
+F.Intrinsic.String.Build("{0}...{1}ERROR ENCOUNTERED{1}Please refer to the error log located in{1}{2}{1}...{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sErrorFile.Trim, V.Global.sRegLog)
+
+'We receive the error information and patch it to the global error text variable
+F.Intrinsic.String.Build("{0}{5}Error has occurred in Subroutine{1}.{5}Time of Error:{4}.{5}Error Number:{2}{5}Error Description:{3}{5}", V.Global.sErrorLog, V.Args.Subroutine, V.Args.ErrorNo, V.Args.ErrorDesc, V.Ambient.Now, V.Ambient.NewLine, V.Global.sErrorLog)
+
+F.Intrinsic.Control.CallSub(PrintLogs)
+
+F.Intrinsic.Control.Catch
+	'If we error out on this subroutine, it will be a sad time
+	F.Intrinsic.UI.Msgbox(V.args.ErrorDesc)
+F.Intrinsic.Control.EndTry
+Program.Sub.ErrorLog.End
+
+Program.Sub.Initialization.Start
+F.Intrinsic.Control.Try
+V.Local.sDirectory.Declare(String, "")
+V.Local.sTempDate.Declare(String, "")
+V.Local.bCheck.Declare(String, "")
+
+'Make sure the custom directory for project is created:
+F.Intrinsic.String.Build("{0}\Custom\6450\", V.Caller.GlobalDir, V.Local.sDirectory)
+
+F.Intrinsic.File.DirExists(V.Local.sDirectory, V.Local.bCheck)
+
+F.Intrinsic.Control.If(V.Local.bCheck, =, False)
+	F.Intrinsic.File.CreateDir(V.Local.sDirectory)
+F.Intrinsic.Control.EndIf
+
+'Verify that there isnt currently a version of this program running
+F.Intrinsic.Control.Callsub(IsRunning)
+
+'First thing we do is make sure we can use the web importer by checking the param files
+F.Intrinsic.Control.CallSub(CheckParams)
+
+'Now we check for program's log and error directories and grab or create the file for each for the day
+'The Logs directory:
+F.Intrinsic.String.Build("{0}\Custom\6450\Logs\", V.Caller.GlobalDir, V.Local.sDirectory)
+F.Intrinsic.File.DirExists(V.Local.sDirectory, V.Local.bCheck)
+
+F.Intrinsic.Control.If(V.Local.bCheck, =, False)
+	F.Intrinsic.File.CreateDir(V.Local.sDirectory)
+F.Intrinsic.Control.EndIf
+
+'The Error directory:
+F.Intrinsic.String.Build("{0}\Custom\6450\Errors\", V.Caller.GlobalDir, V.Local.sDirectory)
+F.Intrinsic.File.DirExists(V.Local.sDirectory, V.Local.bCheck)
+
+F.Intrinsic.Control.If(V.Local.bCheck, =, False)
+	F.Intrinsic.File.CreateDir(V.Local.sDirectory)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Format(V.Ambient.Now, "YYYYMMDD", V.Local.sTempDate)
+
+'Grab the log file for the day:
+F.Intrinsic.String.Build("{0}\Custom\6450\Logs\{1}LOGS{2}", V.Caller.GlobalDir, V.Caller.CompanyCode, V.Local.sTempDate, V.Global.sRegFile)
+F.Intrinsic.File.Exists(V.Global.sRegFile, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck)
+	F.Intrinsic.File.File2String(V.Global.sRegFile, V.Global.sRegLog)
+	
+F.Intrinsic.Control.Else
+	V.Global.sRegLog.Set("")
+	
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Build("{0}{1}----------------------------------------------------------------------------------------------{1}Initiating run at {2}{1}----------------------------------------------------------------------------------------------{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Ambient.Now, V.Global.sRegLog)
+
+'Grab the Error file for the day:
+F.Intrinsic.String.Build("{0}\Custom\6450\Errors\{1}ERROR{2}", V.Caller.GlobalDir, V.Caller.CompanyCode, V.Local.sTempDate, V.Global.sErrorFile)
+F.Intrinsic.File.Exists(V.Global.sErrorFile, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck)
+	F.Intrinsic.File.File2String(V.Global.sErrorFile, V.Global.sErrorLog)
+	F.Intrinsic.String.Build("{0}----------------------------------------------------------------------------------------------{1}{1}Errors for the run on {2}{1}{1}", V.Global.sErrorLog, V.Ambient.NewLine, V.Ambient.Now, V.Global.sErrorLog)
+	
+F.Intrinsic.Control.Else
+	F.Intrinsic.String.Build("----------------------------------------------------------------------------------------------{0}{0}Errors for the run on {1}{0}{0}", V.Ambient.NewLine, V.Ambient.Now, V.Global.sErrorLog)
+	
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.Initialization.End
+
+Program.Sub.CheckParams.Start
+F.Intrinsic.Control.Try
+V.Local.bExists.Declare(Boolean)
+V.Local.sPath.Declare(String)
+
+'Check to make sure the param file exists for the web importer
+F.Intrinsic.String.Build("{0}\GSSPARAM{1}.txt", V.Caller.FilesDir, V.Caller.CompanyCode, V.Local.sPath)
+F.Intrinsic.File.Exists(V.Local.sPath, V.Local.bExists)
+
+F.Intrinsic.Control.If(V.Local.bExists.Not)
+	F.Intrinsic.Control.CallSub(CreateParams)
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.CheckParams.End
+
+Program.Sub.CreateParams.Start
+F.Intrinsic.Control.Try
+V.Local.sParams.Declare(String)
+V.Local.sPath.Declare(String)
+
+'This subroutine gets called when the program does not find the web importer parameter file. It will manually create the web importer params directory using the globa\files directory
+F.Intrinsic.String.Build("WEB ORDER DIRECTORY   = {1}\WEB_ORDERS\{2}{0}WEB ERROR DIRECTORY   = {1}\WEB_ORDERS\{2}\WEB_ERRORS{0}WEB CONVERTED DIR = {1}\WEB_ORDERS\{2}\CONVERTED{0}WEB UPLOADED DIRECTORY= {1}\WEB_ORDERS\{2}\UPLOADED{0}EMAIL FROM ADDRESS= {0}EMAIL TO ADDRESS  = ", V.Ambient.NewLine, V.Caller.FilesDir, V.Caller.CompanyCode, V.Local.sParams)
+
+F.Intrinsic.String.Build("{0}\GSSPARAM{1}.txt", V.Caller.FilesDir, V.Caller.CompanyCode, V.Local.sPath)
+F.Intrinsic.File.String2File(V.Local.sPath, V.Local.sParams)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.CreateParams.End
+
+Program.Sub.IsRunning.Start
+F.Intrinsic.Control.Try
+V.Local.sFile.Declare(String, "")
+V.Local.sContents.Declare(String, "")
+V.Local.iCount.Declare(Long, 0)
+V.Local.bCheck.Declare(Boolean, False)
+
+'We are going to attach this to the Online Update hook instead. What we will have to do is create a file in the temp directory while the process is running to keep it from duplicating orders and customers.
+F.Intrinsic.String.Build("{0}\Custom\6450\{1}ORDERSRUNNING", V.Caller.GlobalDir, V.Caller.CompanyCode, V.Local.sFile)
+V.Global.sIsRunning.Set(V.Local.sFile)
+
+F.Intrinsic.File.Exists(V.Local.sFile, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck)
+	'Means the program is most likely running.... lets add one to the contents and move on...
+	F.Intrinsic.File.File2String(V.Local.sFile, V.Local.sContents)
+	F.Intrinsic.String.Split(V.Local.sContents, V.Ambient.NewLine, V.Local.sContents)
+	V.Local.sContents.RedimPreserve(0,1)
+	F.Intrinsic.Math.Add(V.Local.sContents(1).Long, 1, V.Local.iCount)
+	
+	'If we see that this has ran over 20 times, lets assume that the project is stuck and we can manually delete the file so that the next time the project runs, it actually processes the orders
+	F.Intrinsic.Control.If(V.Local.iCount, >, 20)
+		F.Intrinsic.File.DeleteFile(V.Local.sFile)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.Build("{0}{1}{2}", V.Local.sContents(0), V.Ambient.NewLine, V.Local.iCount, V.Local.sContents)
+		F.Intrinsic.File.String2File(V.Local.sFile, V.Local.sContents)
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Control.End
+F.Intrinsic.Control.Else
+	
+	'Write the file using just the word RUNNING to let the world know the program is currently running
+	F.Intrinsic.File.String2File(V.Local.sFile, "RUNNING")
+
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.IsRunning.End
+
+Program.Sub.PrintLogs.Start
+F.Intrinsic.Control.Try
+
+'The directory and contents of the logs are being saved into global variables, so we just do a string to file for both logs
+F.Intrinsic.File.String2File(V.Global.sRegFile, V.Global.sRegLog)
+
+F.Intrinsic.File.String2File(V.Global.sErrorFile, V.Global.sErrorLog)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.PrintLogs.End
+
+Program.Sub.GSSInfo.Start
+F.Intrinsic.Control.Try
+
+'Grabbing the information from the GSS database to compare against the orders being read and record any new orders we are creating
+'This is being saved into a custom table called GCG_6450_ORDS_XREF. The only purpose of that table is to keep track of the orders that have been created and to who the orders were created for
+'Because we are going to be creating orders for two different types of customers, we want to keep track of the customer information coming in from the website so we can use it in the future
+
+F.Intrinsic.String.Build("{0}{1}Gathering information for existing orders in Global Shop Solutions database...", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+
+F.ODBC.Connection!conx.OpenCompanyConnection
+
+F.Data.DataTable.CreateFromSQL("dtGSSOrders", "conx", "Select ORDER_WEB_ID, CUST_ACCT, CUST_GSS_NO, COMP_NAME, CONTACT_NAME, CONTACT_EMAIL, ORDER_NO, ORDER_LN, ORDER_DT, CREATE_DT, QTY_LINE, PART_NO, LOC, INCOMING_PRICE, LINE_KEY from GCG_6450_ORDS_XREF", True)
+
+F.Data.Dictionary.CreateFromSQL("dicExist", "conx", "Select distinct RTRIM(LTRIM(ORDER_WEB_ID)) as ORDER_WEB_ID, ORDER_NO from GCG_6450_ORDS_XREF")
+F.Data.Dictionary.SetDefaultReturn("dicExist", "-1")
+
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.ODBC.Connection!conx.Close
+F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndTry
+Program.Sub.GSSInfo.End
+
+Program.Sub.GatheringWebInfo.Start
+F.Intrinsic.Control.Try
+V.Local.sURL.Declare(String, "")
+V.Local.sUser.Declare(String, "")
+V.Local.sPassW.Declare(String, "")
+V.Local.sDateForm.Declare(String, "")
+V.Local.sSubbdDt.Declare(String, "")
+V.Local.sJSONFile.Declare(String, "")
+V.Local.sRet.Declare(String, "")
+V.Local.bExist.Declare(Boolean, False)
+V.Local.iCounter.Declare(Long, 0)
+V.Local.dSubbdDt.Declare(Date, "01/01/1900")
+
+'In this subroutine we are getting the information from the shopify web database. This will result in a JSON file with the order information
+
+'The first thign we do is build the URL and user information to query the data:
+'iCounter will define what page we are going to be looking at. The API spits out order information in pages of 10, so if at any point we are expected to make more than ten orders, we will need to look into a new page.
+F.Intrinsic.Control.If(V.Args.Count.Exists)
+	F.Intrinsic.String.Build("{0}{1}Initiating connection to Shopify database for next page of most recent orders...", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+	V.Local.iCounter.Set(V.Args.Count.Long)
+F.Intrinsic.Control.Else
+	F.Intrinsic.String.Build("{0}{1}Initiating connection to Shopify database for first page of most recent orders...", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+	V.Local.iCounter.Set(1)
+F.Intrinsic.Control.EndIf
+
+'We are going to narrow down the data that we look at to the last ten days 
+F.Intrinsic.Date.DateAdd("D", -30, V.Ambient.Date, V.Local.dSubbdDt)
+F.Intrinsic.String.Format(V.Local.dSubbdDt, "YYYY-MM-DD", V.Local.sDateForm)
+F.Intrinsic.String.Build("{0}T00:00:01", V.Local.sDateForm, V.Local.sDateForm)
+
+'We are using the shopify API version 2021-01. The API is designed to use the most recent functional version if you query using a version that is not being maintained
+'For some reason, the paging was not working
+'F.Intrinsic.String.Build("https://magnusonsuperchargers.myshopify.com/admin/api/2021-01/orders.json?page={0}&created_at_min={1}&status=any", V.Local.iCounter, V.Local.sDateForm, V.Local.sURL)
+'F.Intrinsic.String.Build("https://magnusonsuperchargers.myshopify.com/admin/api/2021-01/orders.json?created_at_min={1}&status=any", V.Local.iCounter, V.Local.sDateForm, V.Local.sURL)
+
+'BP - import paid order only
+
+F.Intrinsic.String.Build("https://magnusonsuperchargers.myshopify.com/admin/api/2021-01/orders.json?created_at_min={1}&status=paid", V.Local.iCounter, V.Local.sDateForm, V.Local.sURL)
+
+'This will be file that we are going to use to pull the order data from the website:
+F.Intrinsic.String.Build("{0}\{1}ORDS.json", V.Caller.TempDir, V.Caller.CompanyCode, V.Local.sJSONFile)
+
+'API key was created through the website with administrative rights to be able to read data from the website
+V.Local.sUser.Set("ec6ccde0c22b85881026889159d7c1e2")
+V.Local.sPassW.Set("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")
+
+'These are the properties needed to grab the info
+F.Communication.REST.SetProperty("HTTPMethod","GET")
+F.Communication.REST.SetProperty("User",V.Local.sUser)
+F.Communication.REST.SetProperty("Password",V.Local.sPassW)
+F.Communication.REST.SetProperty("ContentType", "application/json; charset=utf-8")
+F.Communication.REST.SetProperty("Accept","application/json")
+F.Communication.REST.SetProperty("LocalFile", V.Local.sJSONFile)
+F.Communication.REST.Config("SSLEnabledProtocols=4032",V.Local.sRet)
+
+F.Communication.REST.Get(V.Local.sURL)
+
+F.Communication.REST.DoEvents()
+
+'We check to make sure the file exists in the temp folder, and if so, we can move on to navigate the JSON nodes to process data
+F.Intrinsic.Control.CallSub(ProcessingHeader, "JSONFile", V.Local.sJSONFile)
+
+'Once the file has been processed, we check to see if we need to re-run the query for the next page:
+F.Intrinsic.Control.If(V.Args.LIMIT.Exists)
+	F.Intrinsic.Control.If(V.Args.LIMIT.Trim, =, "TRUE")
+		F.Intrinsic.Math.Add(V.Local.iCounter, 1, V.Local.iCounter)
+		F.Intrinsic.Control.CallSub(GatheringWebInfo, "Count", V.Local.iCounter)
+	F.Intrinsic.Control.Else
+		F.Intrinsic.Control.ExitSub
+	F.Intrinsic.Control.EndIf
+F.Intrinsic.Control.Else
+	F.Intrinsic.Control.ExitSub
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.GatheringWebInfo.End
+
+Program.Sub.ProcessingHeader.Start
+F.Intrinsic.Control.Try
+V.Local.sPathCheck.Declare(String, "")
+V.Local.sTemp.Declare(String, "")
+V.Local.sSql.Declare(String, "")
+V.Local.sFilter.Declare(String, "")
+V.Local.sOrdNo.Declare(String, "")
+V.Local.sCreateDate.Declare(String, "")
+V.Local.sWebOrdNum.Declare(String, "")
+V.Local.sWebID.Declare(String, "")
+V.Local.sWebOrderID.Declare(String, "")
+V.Local.sCustNo.Declare(String, "")
+V.Local.sCustAcct.Declare(String, "")
+V.Local.sCompName.Declare(String, "")
+V.Local.sContactName.Declare(String, "")
+V.Local.sShipCustName.Declare(String, "")
+V.Local.sShipAttn.Declare(String, "")
+V.Local.sShipAddy1.Declare(String, "")
+V.Local.sShipAddy2.Declare(String, "")
+V.Local.sShipAddy3.Declare(String, "")
+V.Local.sShipAddy4.Declare(String, "")
+V.Local.sShipAddy5.Declare(String, "")
+V.Local.sShipCity.Declare(String, "")
+V.Local.sShipState.Declare(String, "")
+V.Local.sShipZip.Declare(String, "")
+V.Local.sShipCountry.Declare(String, "")
+V.Local.sShipVia.Declare(String, "")
+V.Local.sShipIntlFlag.Declare(String, "")
+V.Local.sBillCustName.Declare(String, "")
+V.Local.sBillAttn.Declare(String, "")
+V.Local.sBillAddy1.Declare(String, "")
+V.Local.sBillAddy2.Declare(String, "")
+V.Local.sBillAddy3.Declare(String, "")
+V.Local.sBillAddy4.Declare(String, "")
+V.Local.sBillAddy5.Declare(String, "")
+V.Local.sBillCity.Declare(String, "")
+V.Local.sBillState.Declare(String, "")
+V.Local.sBillZip.Declare(String, "")
+V.Local.sBillCountry.Declare(String, "")
+V.Local.sBillIntlFlag.Declare(String, "")
+V.Local.sCountryCheck.Declare(String, "")
+V.Local.sContact.Declare(String, "")
+V.Local.sContactEmail.Declare(String, "")
+V.Local.sContactPhone.Declare(String, "")
+V.Local.sFreight.Declare(String, "")
+V.Local.sUser5.Declare(String, "")
+V.Local.sSalesperson.Declare(String, "")
+V.Local.iHead.Declare(Long, 0)
+V.Local.bNodeExists.Declare(Boolean, False)
+V.Local.bPathExists.Declare(Boolean, False)
+V.Local.dOrderDate.Declare(Date, "01/01/1900")
+v.Local.sPartList.Declare
+v.Local.iCnt.Declare
+v.Local.dPromisedDate.Declare
+v.Local.dTemp.Declare
+v.Local.sPromiseDate1.Declare
+v.Local.sPromiseDate2.Declare
+v.Local.sPromiseDate3.Declare
+v.Local.sPromiseDate4.Declare
+v.Local.sRet.Declare
+
+'This subroutine will be processing order information from a JSON file pulled from a Shopify website. 
+'For this subroutine to process correctly, the file location for the json file will need to be passed in the , 
+'there should be a dictionary named dicExist, where the keys are the value of the order number ID from the website, this will be used to verify whether the order has been previously created in GSS or not. 
+'This subroutine will also be using subroutines from the ORDUPL library, which in turn, require that the ORDUPL and ORDUPLExtra tables for that library be created.
+
+V.Local.iHead.Set(1)
+
+F.Intrinsic.String.Build("{0}{1}Processing resulting JSON file and extracting order information...{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+
+'Load the json file
+F.Communication.JSON.ParseFile(V.Args.JSONFile)
+
+'Now we navigate the top nodes to get header information
+F.Intrinsic.String.Build("/json/orders/[{0}]",V.Local.iHead,V.Local.sPathCheck)
+'We ALWAYS want to check if the node exists because the JSON navigation functions have crap error handling and trying to access a path/node that does not exist will cause the program to hard crash
+F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+
+F.Intrinsic.Control.DoUntil(V.Local.bNodeExists, =, False)
+	'We extract all of the data
+	F.Intrinsic.String.Build("/json/orders/[{0}]/id", V.Local.iHead, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	'The id will define the order, so if we are unable to find this, we will not proceed trying to create the order
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+	    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+		V.Local.sWebID.Set(V.Local.sTemp.Trim)
+		
+		'Now we verify if the order has previously been created:
+		F.Intrinsic.Control.If(V.Dictionary.dicExist![V.Local.sWebID.Long], =, "-1")
+			
+			
+			F.Intrinsic.String.Build("{0}{1}NEW ORDER FOUND!{1}Processing information for order with Shopify id {2}.", V.Global.sRegLog, V.Ambient.NewLine, V.Local.sWebID, V.Global.sRegLog)
+			'We check what kind of Sales Order we are going to create. If this is a distributor, we can extract the customer number directly from the order, if not, we use the cusotmer account MAG001
+			
+			V.Local.sTemp.Redim(0,0)
+			'Order number from the website. Customer wants to store that in the CUSTOMER PO field.
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/tags", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\n",v.Ambient.NewLine,V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+				
+				'IF the sales order will be created for a specific customer account in GSS, then the tag will be GSS:, 
+				'so we can split on that and if the upperbound is 1, we can get the GSS no from index 1
+				F.Intrinsic.String.Split(V.Local.sTemp.UCase, "GSS:", V.Local.sTemp)
+				F.Intrinsic.Control.If(V.Local.sTemp.UBound, =, 1)
+					F.Intrinsic.String.Left(V.Local.sTemp(1), 6, V.Local.sCustNo)
+					V.Local.sCustNo.Set(V.Local.sCustNo.UCase)
+					
+				F.Intrinsic.Control.Else
+					'V.Local.sCustNo.Set("MISKO1")
+					'BP - default customer is WEB001
+					V.Local.sCustNo.Set("WEB001")
+					
+				F.Intrinsic.Control.EndIf
+				
+			F.Intrinsic.Control.Else
+				'V.Local.sCustNo.Set("MISKO1")
+				'BP
+				V.Local.sCustNo.Set("WEB001")
+'				V.Local.sCustNo.Set("MAG001")
+			F.Intrinsic.Control.EndIf
+			
+			V.Local.sTemp.Redim(0,0)
+'			V.Local.sCustNo.Set("WIN008")
+			
+			'Order Date (needs to be passed as CCYYMMDD)
+			F.Intrinsic.String.Build("/json/orders/[{0}]/created_at", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Split(V.Local.sTemp, "T", V.Local.sTemp)
+				F.Intrinsic.String.Split(V.Local.sTemp(0), "-", V.Local.sTemp)
+				V.Local.sTemp.RedimPreserve(0,2)
+				F.Intrinsic.String.Right(V.Local.sTemp(0), 4, V.Local.sTemp(0))
+				F.Intrinsic.String.Build("{0}{1}{2}", V.Local.sTemp(0), V.Local.sTemp(1), V.Local.sTemp(2), V.Local.sCreateDate)
+		    	
+			F.Intrinsic.Control.Else
+				'we can just use the current date I suppose?
+				F.Intrinsic.String.Format(V.Ambient.Now, "CCYYMMDD", V.Local.sCreateDate)
+			F.Intrinsic.Control.EndIf
+			
+			'translate create date to order date
+			F.Intrinsic.Date.ConvertDString(V.Local.sCreateDate, "YYYYMMDD", V.Local.dOrderDate)
+			
+			'Order number from the website. Customer wants to store that in the CUSTOMER PO field.
+			F.Intrinsic.String.Build("/json/orders/[{0}]/order_number", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\n",v.Ambient.NewLine,V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+				F.Intrinsic.String.Build("WEB-{0}", V.Local.sTemp, V.Local.sWebOrdNum)
+				'F.Intrinsic.String.RPad(V.Local.sTemp, " ", 15, V.Local.sWebOrdNum)
+			F.Intrinsic.Control.Else
+				V.Local.sWebOrdNum.Set("NO ORDER NUMBER")
+			F.Intrinsic.Control.EndIf
+			
+			'========BP============
+			'add Last Name to CUSTOMER PO
+			f.Intrinsic.Control.If(V.Local.sWebOrdNum,<>,"NO ORDER NUMBER")
+				F.Intrinsic.String.Build("/json/orders/[{0}]/customer/last_name", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+					F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+					F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp,"\n",v.Ambient.NewLine,V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+					F.Intrinsic.String.Build("{0} {1}", V.Local.sWebOrdNum,V.Local.sTemp, V.Local.sTemp)
+					F.Intrinsic.String.RPad(V.Local.sTemp, " ", 15, V.Local.sWebOrdNum)
+				F.Intrinsic.Control.EndIf
+			f.Intrinsic.Control.EndIf
+			'=========================
+			
+			'Contact
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/first_name", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath", V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sTemp.Set(V.Args.Return)
+			    F.Intrinsic.String.Left(V.Local.sTemp, 30, V.Local.sContact)
+			    F.Intrinsic.String.RPad(V.Local.sContact, " ", 30, V.Local.sContact)
+			F.Intrinsic.Control.Else
+			    F.Intrinsic.String.RPad("", " ", 30, V.Local.sContact)
+			F.Intrinsic.Control.EndIf
+		    
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/last_name", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sTemp.Set(V.Args.Return)
+			    F.Intrinsic.String.Build("{0} {1}", V.Local.sContact.Trim, V.Local.sTemp, V.Local.sContact)
+			    F.Intrinsic.String.Left(V.Local.sContact, 30, V.Local.sContact)
+			    F.Intrinsic.String.RPad(V.Local.sContact, " ", 30, V.Local.sContact)
+			F.Intrinsic.Control.EndIf
+			
+			'Contact email
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/email", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.String.RPad(V.Local.sTemp, " ", 100, V.Local.sContactEmail)
+				
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.RPad("", " ", 100, V.Local.sContactEmail)
+			F.Intrinsic.Control.EndIf
+			
+			'Customer Account
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/default_address/customer_id", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sCustAcct)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sCustAcct.Set("")
+			F.Intrinsic.Control.EndIf
+			
+			'Company Name
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/default_address/company", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.String.RPad(V.Local.sTemp, " ", 100, V.Local.sCompName)
+				
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.RPad("", " ", 100, V.Local.sCompName)
+			F.Intrinsic.Control.EndIf
+			
+			'Contact Name
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/default_address/name", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.String.RPad(V.Local.sTemp, " ", 100, V.Local.sContactName)
+				
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.RPad("", " ", 100, V.Local.sContactName)
+			F.Intrinsic.Control.EndIf
+			
+			'Contact phone
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/default_address/phone", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath", V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "-", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, " ", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "(", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, ")", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, ".", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "/", "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "+", "", V.Local.sTemp)
+				F.Intrinsic.String.Left(V.Local.sTemp, 20, V.Local.sTemp)
+				F.Intrinsic.String.RPad(V.Local.sTemp, " ", 20, V.Local.sContactPhone)
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.RPad("", " ", 20, V.Local.sContactPhone)
+			F.Intrinsic.Control.EndIf
+			
+			'=================BP=======================
+			'Freight
+			'F.Intrinsic.String.Build("/json/orders/[{0}]/customer/email", V.Local.iHead, V.Local.sPathCheck)
+			
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_lines/[1]/price", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath", V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\","", V.Local.sTemp)
+			    F.Intrinsic.Math.Round(V.Local.sTemp.Float, 2, V.Local.sFreight)
+			    F.Intrinsic.String.Split(V.Local.sFreight, ".", V.Local.sTemp)
+			    V.Local.sTemp.RedimPreserve(0,1)
+			    F.Intrinsic.String.RPad(V.Local.sTemp(1), "0", 2, V.Local.sTemp(1))
+			    F.Intrinsic.String.LPad(V.Local.sTemp(0), "0", 8, V.Local.sTemp(0))
+			    F.Intrinsic.String.Build("{0}{1}", V.Local.sTemp(0), V.Local.sTemp(1), V.Local.sFreight)
+				F.Intrinsic.String.LPad(V.Local.sFreight, "0", 10, V.Local.sFreight)
+					
+			F.Intrinsic.Control.Else
+				V.Local.sFreight.Set("0000000000")
+			F.Intrinsic.Control.EndIf
+			'==========================================
+			
+			'Ship Via
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_lines/[1]/title", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote,"", V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "\","", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sTemp.Set(V.Args.Return)
+			    F.Communication.Misc.EncodeToString(3, V.Local.sTemp, V.Local.sTemp)
+			    F.Intrinsic.String.Replace(V.Local.sTemp, "%c2%ae", "", V.Local.sTemp)
+			    F.Communication.Misc.DecodeToString(3, V.Local.sTemp, V.Local.sTemp)
+			    F.Intrinsic.Control.If(V.Local.sTemp.Trim, =, "UPS Shipping - CA",or,V.Local.sTemp.Trim, =, "UPS Shipping - Ground",V.Local.sTemp.Trim, =, "UPS Ground")
+					V.Local.sShipVia.Set("Ground Cust Pd")
+				F.Intrinsic.Control.Elseif(V.Local.sTemp.Trim, =, "Free Shipping")
+					V.Local.sShipVia.Set("Ground")
+				F.Intrinsic.Control.Elseif(V.Local.sTemp.Trim, =, "Flat Rate")
+					V.Local.sShipVia.Set("USPS CUST PAID")
+				F.Intrinsic.Control.Else
+					V.Local.sShipVia.Set("Ground Cust Pd")
+				F.Intrinsic.Control.EndIf
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipVia.Set("")
+			   
+			F.Intrinsic.Control.EndIf
+			 F.Intrinsic.String.RPad(V.Local.sShipVia, " ", 20, V.Local.sShipVia)
+
+			'BP - Carrier
+			v.Local.sCarrier.Declare
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_lines/[1]/title", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+
+				F.Intrinsic.Control.If(V.Local.sTemp.Trim, =, "UPS Shipping - CA",or,V.Local.sTemp.Trim, =, "UPS Shipping - Ground",V.Local.sTemp.Trim, =, "UPS Ground")
+					V.Local.sCarrier.Set("UPSGRP")
+				F.Intrinsic.Control.Elseif(V.Local.sTemp.Trim, =, "Free Shipping")
+					V.Local.sCarrier.Set("UPSGR")
+				F.Intrinsic.Control.Elseif(V.Local.sTemp.Trim, =, "Flat Rate")
+					V.Local.sCarrier.Set("USPSFP")
+				F.Intrinsic.Control.Else
+					V.Local.sCarrier.Set("UPSGRP")
+				F.Intrinsic.Control.EndIf
+			f.Intrinsic.Control.EndIf
+			
+		    F.Intrinsic.String.RPad(V.Local.sCarrier, " ", 6, V.Local.sCarrier)
+			
+			'Payment Confirmation
+			F.Intrinsic.String.Build("/json/orders/[{0}]/financial_status", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.If(V.Local.sTemp.Trim, =, "PAID")
+					V.Local.sUser5.Set("PREPAID")
+				F.Intrinsic.Control.Else
+					V.Local.sUser5.Set("")
+				F.Intrinsic.Control.EndIf
+				
+			F.Intrinsic.Control.Else
+				V.Local.sUser5.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sUser5, " ", 30, V.Local.sUser5)
+		    
+			'SHIPPING INFORMATION - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+			'Ship To Name
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/first_name", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipCustName.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipCustName.Set("")
+			F.Intrinsic.Control.EndIf
+			
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/last_name", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sTemp.Set(V.Args.Return)
+				F.Intrinsic.String.Build("{0} {1}", V.Local.sShipCustName.Trim, V.Local.sTemp, V.Local.sShipCustName)
+				
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipCustName, " ", 40, V.Local.sShipCustName)
+			
+			'Ship to Address 1
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/address1", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipAddy1.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipAddy1.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipAddy1, " ", 40, V.Local.sShipAddy1)
+			
+			'Address 2
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/address2", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipAddy2.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipAddy2.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipAddy2, " ", 40, V.Local.sShipAddy2)
+			
+			'City
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/city", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipCity.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipCity.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipCity, " ", 25, V.Local.sShipCity)
+			
+			'province code (state I suppose)
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/province_code", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipState.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipState.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipState, " ", 2, V.Local.sShipState)
+			
+			'zip
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/zip", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipZip.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipZip.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipZip, " ", 13, V.Local.sShipZip)
+			
+			'Country
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/country", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sShipCountry.Set(V.Args.Return)
+				'BP
+				f.Intrinsic.String.Replace(v.Local.sShipCountry,"United States","USA",v.Local.sShipCountry)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sShipCountry.Set("")
+			F.Intrinsic.Control.EndIf
+		    F.Intrinsic.String.RPad(V.Local.sShipCountry, " ", 25, V.Local.sShipCountry)
+			
+			'Country Code
+			F.Intrinsic.String.Build("/json/orders/[{0}]/shipping_address/country_code", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+			    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+				F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+				V.Local.sCountryCheck.Set(V.Args.Return)
+				
+			F.Intrinsic.Control.Else
+				V.Local.sCountryCheck.Set("")
+			F.Intrinsic.Control.EndIf
+			
+			'International check
+			F.Intrinsic.Control.If(V.Local.sCountryCheck, <>, "US")
+				F.Intrinsic.String.Build("{0}, {1}", V.Local.sShipCity.Trim, V.Local.sShipCountry.Trim, V.Local.sShipAddy4)
+				F.Intrinsic.String.RPad(V.Local.sShipAddy4, " ", 40, V.Local.sShipAddy4)
+				F.Intrinsic.String.Build("{0}, {1}", V.Local.sShipState.Trim, V.Local.sShipZip.Trim, V.Local.sShipAddy5)
+				F.Intrinsic.String.RPad(V.Local.sShipAddy5, " ", 40, V.Local.sShipAddy5)
+				
+				F.Intrinsic.String.RPad("", " ", 25, V.Local.sShipCity)
+				F.Intrinsic.String.RPad("", " ", 25, V.Local.sShipCountry)
+				F.Intrinsic.String.RPad("", " ", 2, V.Local.sShipState)
+				F.Intrinsic.String.RPad("", " ", 13, V.Local.sShipZip)
+				
+				V.Local.sShipIntlFlag.Set("Y")
+			F.Intrinsic.Control.Else
+				F.Intrinsic.String.RPad("", " ", 20, V.Local.sShipAddy4)
+				F.Intrinsic.String.RPad("", " ", 20, V.Local.sShipAddy5)
+				
+				V.Local.sShipIntlFlag.Set(" ")
+			F.Intrinsic.Control.EndIf
+			
+			'- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+			
+			'BILLING INFORMATION - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+			F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			'If this has a billing address, we grab it. If not, we are using the shipping information in its place
+			F.Intrinsic.Control.If(V.Local.bNodeExists, =, True)
+				
+				'Bill To Name
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/first_name", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillCustName.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillCustName.Set("")
+				F.Intrinsic.Control.EndIf
+				
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/last_name", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sTemp.Set(V.Args.Return)
+					F.Intrinsic.String.Build("{0} {1}", V.Local.sBillCustName, V.Local.sTemp, V.Local.sBillCustName)
+					
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillCustName, " ", 40, V.Local.sBillCustName)
+				
+				'Bill to Address 1
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/address1", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillAddy1.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillAddy1.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillAddy1, " ", 40, V.Local.sBillAddy1)
+				
+				'Address 2
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/address2", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillAddy2.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillAddy2.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillAddy2, " ", 40, V.Local.sBillAddy2)
+				
+				'City
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/city", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillCity.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillCity.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillCity, " ", 25, V.Local.sBillCity)
+				
+				'province code (state I suppose)
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/province_code", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillState.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillState.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillState, " ", 2, V.Local.sBillState)
+				
+				'zip
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/zip", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillZip.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sBillZip.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillZip, " ", 13, V.Local.sBillZip)
+				
+				'Country
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/country", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sBillCountry.Set(V.Args.Return)
+					'BP
+					f.Intrinsic.String.Replace(v.Local.sBillCountry,"United States","USA",v.Local.sBillCountry)
+				F.Intrinsic.Control.Else
+					V.Local.sBillCountry.Set("")
+				F.Intrinsic.Control.EndIf
+			    F.Intrinsic.String.RPad(V.Local.sBillCountry, " ", 25, V.Local.sBillCountry)
+				
+				'Country Code
+				F.Intrinsic.String.Build("/json/orders/[{0}]/billing_address/country_code", V.Local.iHead, V.Local.sPathCheck)
+				F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+				F.Intrinsic.Control.If(V.Local.bNodeExists)
+				    F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			    	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, V.Ambient.DblQuote, "", V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp, "\n", V.Ambient.NewLine, V.Local.sTemp)
+					F.Intrinsic.String.Replace(V.Local.sTemp.UCase, "\", "", V.Local.sTemp)
+					F.Intrinsic.Control.CallSub(CharacterCheck, "Value", V.Local.sTemp)
+					V.Local.sCountryCheck.Set(V.Args.Return)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sCountryCheck.Set("")
+				F.Intrinsic.Control.EndIf
+				
+				'International check
+				F.Intrinsic.Control.If(V.Local.sCountryCheck, <>, "US")
+					F.Intrinsic.String.Build("{0}, {1}", V.Local.sBillCity.Trim, V.Local.sBillCountry.Trim, V.Local.sBillAddy4)
+					F.Intrinsic.String.RPad(V.Local.sBillAddy4, " ", 40, V.Local.sBillAddy4)
+					F.Intrinsic.String.Build("{0}, {1}", V.Local.sBillState.Trim, V.Local.sBillZip.Trim, V.Local.sBillAddy5)
+					F.Intrinsic.String.RPad(V.Local.sBillAddy5, " ", 40, V.Local.sBillAddy5)
+					
+					F.Intrinsic.String.RPad("", " ", 25, V.Local.sBillCity)
+					F.Intrinsic.String.RPad("", " ", 25, V.Local.sBillCountry)
+					F.Intrinsic.String.RPad("", " ", 2, V.Local.sBillState)
+					F.Intrinsic.String.RPad("", " ", 13, V.Local.sBillZip)
+					
+					V.Local.sBillIntlFlag.Set("Y")
+				F.Intrinsic.Control.Else
+					F.Intrinsic.String.RPad("", " ", 20, V.Local.sBillAddy4)
+					F.Intrinsic.String.RPad("", " ", 20, V.Local.sBillAddy5)
+					
+					V.Local.sBillIntlFlag.Set(" ")
+				F.Intrinsic.Control.EndIf
+			F.Intrinsic.Control.Else
+				
+				'We are just borrowing the Shipping information for the Billing information if we cannot find a billing address
+				V.Local.sBillCustName.Set(V.Local.sShipCustName)
+				V.Local.sBillAddy1.Set(V.Local.sShipAddy1)
+				V.Local.sBillAddy2.Set(V.Local.sShipAddy2)
+				V.Local.sBillAddy3.Set(V.Local.sShipAddy3)
+				V.Local.sBillAddy4.Set(V.Local.sShipAddy4)
+				V.Local.sBillAddy5.Set(V.Local.sShipAddy5)
+				V.Local.sBillCity.Set(V.Local.sShipCity)
+				V.Local.sBillState.Set(V.Local.sShipState)
+				V.Local.sBillZip.Set(V.Local.sShipZip)
+				V.Local.sBillCountry.Set(V.Local.sShipCountry)
+				V.Local.sBillIntlFlag.Set(V.Local.sShipIntlFlag)
+				
+			F.Intrinsic.Control.EndIf
+			
+			'- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -salesperson
+			F.Intrinsic.String.Build("/json/orders/[{0}]/customer/tags", V.Local.iHead, V.Local.sPathCheck)
+			F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+			F.Intrinsic.Control.If(V.Local.bNodeExists)
+				F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+				F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\n",v.Ambient.NewLine,V.Local.sTemp)
+				F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+				
+				'Salespersons are added to the customer account online by adding a tag labeled REP
+				'We grab teh values of the tags, if we can split on REP: then the value in the index 1 will contain the account rep in the first two characters
+				F.Intrinsic.String.Split(V.Local.sTemp.UCase, "REP:", V.Local.sTemp)
+				F.Intrinsic.Control.If(V.Local.sTemp.UBound, =, 1)
+					F.Intrinsic.String.Left(V.Local.sTemp(1), 2, V.Local.sSalesperson)
+					V.Local.sSalesperson.Set(V.Local.sSalesperson.UCase)
+					
+				F.Intrinsic.Control.Else
+					V.Local.sSalesperson.Set("  ")
+				F.Intrinsic.Control.EndIf
+				
+			F.Intrinsic.Control.Else
+				V.Local.sSalesperson.Set("  ")
+			F.Intrinsic.Control.EndIf
+			
+			
+'			F.Data.DataTable.AddRow("ORDUPL", "Transaction", "O", "CustomerNo", V.Local.sCustNo, "OrderDate", V.Local.sCreateDate, "CustomerPO", V.Local.sWebOrdNum.Trim, "ShipToName", V.Local.sShipCustName.UCase, "ShipToAddress1", V.Local.sShipAddy1, "ShipToAddress2", V.Local.sShipAddy2, "ShipToCity", V.Local.sShipCity, "ShipToState", V.Local.sShipState, "ShipToZip", V.Local.sShipZip, "ShipToCountry", V.Local.sShipCountry, "ShipToAttention", V.Local.sShipAttn, "UserField3Head", V.Local.sWebID, "UserField5Head", V.Local.sUser5, "Salesman", "WEB", "ContactName", V.Local.sContact, "Freight", V.Local.sFreight, "ShipVia", V.Local.sShipVia)
+
+			'F.Data.DataTable.AddRow("ORDUPL", "Transaction", "O", "CustomerNo", V.Local.sCustNo, "OrderDate", V.Local.sCreateDate, "CustomerPO", V.Local.sWebOrdNum.Trim, "ShipToName", V.Local.sShipCustName.UCase, "ShipToAddress1", V.Local.sShipAddy1, "ShipToAddress2", V.Local.sShipAddy2, "ShipToCity", V.Local.sShipCity, "ShipToState", V.Local.sShipState, "ShipToZip", V.Local.sShipZip, "ShipToCountry", V.Local.sShipCountry, "ShipToAttention", V.Local.sShipAttn, "UserField3Head", V.Local.sWebID, "UserField5Head", V.Local.sUser5, "ContactName", V.Local.sContact, "Freight", V.Local.sFreight, "ShipVia", V.Local.sShipVia, "Salesman", V.Local.sSalesperson,"Carrier",v.Local.sCarrier)
+			
+			F.Data.DataTable.AddRow("ORDUPL", "Transaction", "O", "CustomerNo", V.Local.sCustNo, "OrderDate", V.Local.sCreateDate, "CustomerPO", V.Local.sWebOrdNum.Trim, "ShipToName", V.Local.sShipCustName.UCase, "ShipToAddress1", V.Local.sShipAddy1, "ShipToAddress2", V.Local.sShipAddy2, "ShipToCity", V.Local.sShipCity, "ShipToState", V.Local.sShipState, "ShipToZip", V.Local.sShipZip, "ShipToCountry", V.Local.sShipCountry, "ShipToAttention", V.Local.sShipAttn, "UserField3Head", V.Local.sWebID, "UserField5Head", V.Local.sUser5, "ContactName", V.Local.sContact, "Freight", V.Local.sFreight, "ShipVia", V.Local.sShipVia, "Salesman", V.Local.sSalesperson,"Carrier",v.Local.sCarrier)
+			
+			
+			F.Data.DataTable.AddRow("ORDUPLExtra", "ShipToInternationalFlag", V.Local.sShipIntlFlag, "ShipToName", V.Local.sShipCustName.UCase, "ShipToAddress1", V.Local.sShipAddy1, "ShipToAddress2", V.Local.sShipAddy2, "ShipToAddress3", V.Local.sShipAddy3, "ShipToAddress4", V.Local.sShipAddy4, "ShipToAddress5", V.Local.sShipAddy5, "ShipToCity", V.Local.sShipCity, "ShipToState", V.Local.sShipState, "ShipToZip", V.Local.sShipZip, "ShipToCountry", V.Local.sShipCountry, "ShipToAttention", V.Local.sShipAttn, "BillToName", V.Local.sBillCustName.UCase, "BillToAttention", V.Local.sBillAttn, "BillToAddress1", V.Local.sBillAddy1, "BillToAddress2", V.Local.sBillAddy2, "BillToAddress3", V.Local.sBillAddy3, "BillToAddress4", V.Local.sBillAddy4, "BillToAddress5", V.Local.sBillAddy5, "BillToCity", V.Local.sBillCity, "BillToState", V.Local.sBillState, "BillToZip", V.Local.sBillZip, "BillToCountry", V.Local.sBillCountry, "BillToInternationalFlag", V.Local.sBillIntlFlag, "ContactEmail", V.Local.sContactEmail, "ContactPhone", V.Local.sContactPhone, "OrderSort", V.Local.sWebID)
+			
+			F.Intrinsic.String.Build("{0}{1}Header information and miscellaneous information captured successfully.{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+			
+			'BP - create DT Size for T-Shirt size
+			f.Data.Datatable.Create("dtSize",true)
+			f.Data.Datatable.AddColumn("dtSize","Part","String")
+			f.Data.Datatable.AddColumn("dtSize","Size","String")
+			'Now we need to add the order lines to the tables
+			F.Intrinsic.Control.CallSub(ProcessingLines, "HEAD", V.Local.iHead, "ORDERID", V.Local.sWebID)
+			
+			'As soon as we are ready to create a new order, lets set the flag that an order was created
+			V.Global.bNewOrders.Set(True)
+			
+			'We use the library to create the orders in the system.
+			F.Intrinsic.Control.CallSub(ORDUPLCreateFile)
+			
+			F.Intrinsic.String.Build("{0}{1}Creating order in GSS.", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+			
+			F.Intrinsic.Control.CallSub(ORDUPLSync)
+			
+			'At this point, the order has been created. Let us grab the order info so we can save it:
+			F.ODBC.Connection!cong.OpenCompanyConnection
+			
+			F.Intrinsic.String.Build("Select Top 1 ORDER_NO from V_ORDER_HEADER where CODE_SORT = '{0}' order by Date_Order Desc", V.Local.sWebID.Trim, V.Local.sSql)
+			F.ODBC.Connection!cong.ExecuteAndReturn(V.Local.sSql, V.Local.sOrdNo)
+			F.Intrinsic.Control.If(V.Local.sOrdNo.Trim, <>, "")
+'				F.Intrinsic.String.Build("{0}{1}{2}", V.Global.sBody, V.Ambient.NewLine, V.Local.sOrdNo, V.Global.sBody)
+			F.Intrinsic.Control.Else
+'				F.Intrinsic.String.Build("{0}{1}{2}", V.Global.sError, V.Ambient.NewLine, V.Local.sWebOrdNum.Trim, V.Global.sError)
+			F.Intrinsic.Control.EndIf
+			
+			F.Intrinsic.String.Build("UPDATE ORDER_HEADER Set TERMS = 'SHOPIFY' where ORDER_NO = '{0}' and RECORD_NO = '  A'", V.Local.sOrdNo, V.Local.sSql)
+'			F.ODBC.Connection!cong.Execute(V.Local.sSql)
+			'=====BP=====
+			
+			F.Intrinsic.Control.If(V.Local.sOrdNo.Trim, <>, "")
+				f.Intrinsic.Control.If(v.DataTable.dtOrderLn.Exists,=,True)
+					f.Data.Datatable.Close("dtOrderLn")
+				f.Intrinsic.Control.EndIf
+				f.Intrinsic.String.Build("Select RTRIM(PART) as PART from V_ORDER_LINES where ORDER_NO = '{0}'",V.Local.sOrdNo, V.Local.sSql)
+				f.Data.Datatable.CreateFromSQL("dtOrderLn","cong",v.Local.sSql)
+				f.Data.Datatable.AddColumn("dtOrderLn","OrderDate","Date")
+				f.Data.Datatable.SetValue("dtOrderLn",-1,"OrderDate",V.Local.dOrderDate)
+				f.Data.Datatable.AddColumn("dtOrderLn","LeadTime","Float")
+				f.Data.Dictionary.CreateFromSQL("dictLeadTime","cong","Select RTRIM(PART),LEADTIME from GCG_6450_PART_LEADTIME")
+				f.Data.Dictionary.SetDefaultReturn("dictLeadTime",0)
+				f.Data.Datatable.FillFromDictionary("dtOrderLn","dictLeadTime","PART","LeadTime")
+				f.Data.Dictionary.Close("dictLeadTime")
+				
+				f.Intrinsic.Control.For(v.Local.iCnt,0,v.DataTable.dtOrderLn.RowCount--,1)
+					f.Intrinsic.Date.DateAdd("D",v.DataTable.dtOrderLn(v.local.iCnt).LeadTime!FieldValFloat,v.DataTable.dtOrderLn(v.local.iCnt).OrderDate!FieldValTrim,v.Local.dPromisedDate)
+					F.Intrinsic.String.Format(v.Local.dPromisedDate,"YYYYMMDD",V.Local.sPromiseDate1)
+					F.Intrinsic.String.Format(v.Local.dPromisedDate,"MMDDYY",V.Local.sPromiseDate2)
+					f.Intrinsic.String.Build("UPDATE ORDER_LINES set DATE_ITEM_PROM = '{0}',ITEM_PROMISE_DT = '{1}' where ORDER_NO = '{2}' and PART = '{3}' and RECORD_TYPE = 'L'",v.Local.sPromiseDate1,V.Local.sPromiseDate2, v.Local.sOrdNo,v.DataTable.dtOrderLn(v.local.iCnt).Part!FieldValTrim,v.Local.sSql)
+					F.ODBC.Connection!cong.Execute(V.Local.sSql)
+					f.Intrinsic.Control.If(v.Local.dTemp,<,v.Local.dPromisedDate)
+						v.Local.dTemp.Set(v.Local.dPromisedDate)
+					f.Intrinsic.Control.EndIf
+				f.Intrinsic.Control.Next(v.Local.iCnt)
+				
+				F.Intrinsic.String.Format(v.Local.dTemp,"MMDDYY",V.Local.sPromiseDate3)
+				F.Intrinsic.String.Format(v.Local.dTemp,"YYYYMMDD",V.Local.sPromiseDate4)
+				
+				f.Intrinsic.String.Build("UPDATE ORDER_HEADER set DATE_DUE = '{0}',DATE_DUE_CNV = '{1}' where ORDER_NO = '{2}' and RECORD_TYPE = 'A'",v.Local.sPromiseDate3,V.Local.sPromiseDate4,v.Local.sOrdNo,v.Local.sSql)
+				F.ODBC.Connection!cong.Execute(V.Local.sSql)
+			F.Intrinsic.Control.EndIf
+			
+			f.Intrinsic.Control.If(v.DataTable.dtSize.RowCount,>,0)
+				f.Intrinsic.Control.For(v.Local.iCnt,0,v.DataTable.dtSize.RowCount--,1)
+					f.Intrinsic.String.Build("Select RTRIM(PART) as PART from V_ORDER_LINES where ORDER_NO = '{0}' and RTRIM(PART) = '{1}'",V.Local.sOrdNo,v.DataTable.dtSize(v.Local.iCnt).Part!FieldValTrim,v.Local.sSql)
+					f.ODBC.Connection!cong.ExecuteAndReturn(v.Local.sSql,v.Local.sRet)
+					f.Intrinsic.Control.If(v.Ambient.ExecuteAndReturnEOF,=,False)
+						f.Intrinsic.String.Build("UPDATE ORDER_LINES set CUSTOMER_PART = '{0}' where ORDER_NO = '{1}' and RTRIM(PART) = '{2}' and RECORD_TYPE = 'L'",v.DataTable.dtSize(v.Local.iCnt).Size!FieldValTrim,V.Local.sOrdNo,v.DataTable.dtSize(v.Local.iCnt).Part!FieldValTrim,v.Local.sSql)
+						F.ODBC.Connection!cong.Execute(V.Local.sSql)
+					f.Intrinsic.Control.EndIf
+				f.Intrinsic.Control.Next(v.Local.iCnt)
+			f.Intrinsic.Control.EndIf
+			
+			
+			f.Intrinsic.Control.If(v.DataTable.dtSize.Exists,=,True)
+				f.Data.Datatable.Close("dtSize")
+			f.Intrinsic.Control.EndIf
+			'=============
+			
+			F.ODBC.Connection!cong.Close
+			
+			'IF ORDER INFORMATION WAS NOT FOUND ON THE DATABASE, WE NEED TO REPORT BUG AND NOT RECORD IT IN THE XREF TABLE
+			F.Intrinsic.Control.If(V.Local.sOrdNo.Trim, =, "")
+				F.Intrinsic.String.Build("[ORDER_WEB_ID] = '{0}'", V.Local.sWebID, V.Local.sFilter)
+				F.Intrinsic.String.Build("{0}-NOTCREATED", V.Local.sWebID, V.Local.sTemp)
+				F.Data.DataView.Create("dtGSSOrders", "dvOrdDets", 22, V.Local.sFilter, "")
+				F.Data.DataView.SetValue("dtGSSOrders", "dvOrdDets", -1, "CUST_ACCT", V.Local.sCustAcct.Trim, "CUST_GSS_NO", V.Local.sCustNo.Trim, "COMP_NAME", V.Local.sCompName.Trim, "CONTACT_NAME", V.Local.sContactName.Trim, "CONTACT_EMAIL", V.Local.sContactEmail.Trim, "ORDER_NO", "ERROR", "ORDER_DT", V.Local.dOrderDate, "CREATE_DT", "01/01/1900", "ORDER_WEB_ID", V.Local.sTemp)
+				
+				F.Intrinsic.String.Build("{0}{1}Global Shop order was not found for online order web ID {2}.{1}Web Importer error most likely occurred. Check WEB importer logs.{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Local.sWebID, V.Global.sRegLog)
+				
+				F.Data.DataView.Close("dtGSSOrders", "dvOrdDets")
+			
+			F.Intrinsic.Control.Else
+				'fill in header information on order xref table:
+				F.Intrinsic.String.Build("[ORDER_WEB_ID] = '{0}'", V.Local.sWebID, V.Local.sFilter)
+				F.Data.DataView.Create("dtGSSOrders", "dvOrdDets", 22, V.Local.sFilter, "")
+				F.Data.DataView.SetValue("dtGSSOrders", "dvOrdDets", -1, "CUST_ACCT", V.Local.sCustAcct.Trim, "CUST_GSS_NO", V.Local.sCustNo.Trim, "COMP_NAME", V.Local.sCompName.Trim, "CONTACT_NAME", V.Local.sContactName.Trim, "CONTACT_EMAIL", V.Local.sContactEmail.Trim, "ORDER_NO", V.Local.sOrdNo.Trim, "ORDER_DT", V.Local.dOrderDate, "CREATE_DT", V.Ambient.Date)
+				
+				F.Intrinsic.String.Build("{0}{1}Order {2} has been created in Global Shop for web ID {3}.{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Local.sOrdNo, V.Local.sWebID, V.Global.sRegLog)
+				
+				F.Data.DataView.Close("dtGSSOrders", "dvOrdDets")
+			F.Intrinsic.Control.EndIf
+			
+			
+		F.Intrinsic.Control.Else
+			'The order captured from the website has been created. We could add it to the logs:
+			
+		F.Intrinsic.Control.EndIf
+		
+		F.Intrinsic.Math.Add(V.Local.iHead,1,V.Local.iHead)	
+		F.Intrinsic.String.Build("/json/orders/[{0}]",V.Local.iHead,V.Local.sPathCheck)
+		F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+		
+	F.Intrinsic.Control.EndIf
+	
+F.Intrinsic.Control.Loop
+
+F.Intrinsic.Control.If(V.Local.iHead, =, 10)
+	'We check to see if the JSON File had 10 orders. If so, we need to query for the next page.
+	F.Intrinsic.Variable.AddRV("LIMIT", "TRUE")
+	
+F.Intrinsic.Control.Else
+	F.Intrinsic.Variable.AddRV("LIMIT", "FALSE")
+	
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+'F.Intrinsic.UI.Msgbox(V.Ambient.ErrorDescription)
+
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.ProcessingHeader.End
+
+Program.Sub.ProcessingLines.Start
+F.Intrinsic.Control.Try
+V.Local.sLinePath.Declare(String, "")
+V.Local.sDblQtRemoval.Declare(String, "")
+V.Local.sPathCheck.Declare(String, "")
+V.Local.sTemp.Declare(String, "")
+V.Local.sSKU.Declare(String, "")
+V.Local.sPartNo.Declare(String, "")
+V.Local.sPartRev.Declare(String, "")
+V.Local.sPartDesc.Declare(String, "")
+V.Local.sFormatQty.Declare(String, "")
+V.Local.sFormatPrice.Declare(String, "")
+V.Local.sLine.Declare(String, "")
+V.Local.fQty.Declare(Float, 0.0)
+V.Local.fPrice.Declare(Float, 0.0)
+V.Local.fDiscount.Declare(Float, 0.0)
+V.Local.iCounter.Declare(Long, 0)
+V.Local.bNodeExists.Declare(Boolean, False)
+v.Local.fTax.Declare
+v.Local.iCnt.Declare
+v.Local.iCnt2.Declare
+v.Local.sSize.Declare
+v.Local.sPartnRev.Declare
+
+'In the same manner that we are processing the header, we will be processing the lines:
+'We expect the JSON file to be loaded into OCTSRS and currently reading the file so we can just access teh nodes for the lines
+'Passed information expected: HEAD, node number of the order we are lookign at. ORDERWEBID, the ID of the order from the website. CUSTOMERNO the GSS customer number we are using. ORDERDATE the date the order was created
+
+V.Local.iCounter.Set(1)
+
+F.Intrinsic.String.Build("{0}~{0}", V.Ambient.DblQuote, V.Local.sDblQtRemoval)
+F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]", V.Args.Head.Long, V.Local.iCounter, V.Local.sLinePath)
+F.Communication.JSON.HasXPath(V.Local.sLinePath, V.Local.bNodeExists)
+
+F.Intrinsic.Control.DoUntil(V.Local.bNodeExists, =, False)
+	
+	'The part number is stored in the SKU:
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/sku", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sSKU)
+		F.Intrinsic.String.RPad(V.Local.sSKU, " ", 20, V.Local.sSKU)
+		F.Intrinsic.String.Left(V.Local.sSKU, 17, V.Local.sPartNo)
+		F.Intrinsic.String.Right(V.Local.sSKU, 3, V.Local.sPartRev)
+		
+'	F.Intrinsic.Control.Else
+'	Function.Intrinsic.Debug.InvokeDebugger
+'	Function.Intrinsic.Debug.Stop
+'	
+'		V.Local.bNodeExists.Set(True)
+'		'f.Intrinsic.Control.ExitDo
+''		V.Local.sSKU.Set("")
+''		F.Intrinsic.String.RPad(V.Local.sSKU, " ", 20, V.Local.sSKU)
+''		F.Intrinsic.String.Left(V.Local.sSKU, 17, V.Local.sPartNo)
+''		F.Intrinsic.String.Right(V.Local.sSKU, 3, V.Local.sPartRev)
+		
+	
+	
+	'name of the product used as description
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/name", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Build("{0}~{1}~{0}", V.Ambient.DblQuote, V.Local.sTemp, V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Local.sDblQtRemoval,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+		F.Intrinsic.String.Left(V.Local.sTemp, 30, V.Local.sTemp)
+		F.Intrinsic.String.RPad(V.Local.sTemp, " ", 30, V.Local.sPartDesc)
+	
+	F.Intrinsic.Control.Else
+		F.Intrinsic.String.RPad("", " ", 30, V.Local.sPartDesc)
+	F.Intrinsic.Control.EndIf
+
+	Function.Intrinsic.Debug.InvokeDebugger
+	Function.Intrinsic.Debug.Stop
+	
+	'Quantity
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/quantity", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+		V.Local.fQty.Set(V.Local.sTemp.Float)
+		
+	F.Intrinsic.Control.Else
+		V.Local.fQty.Set(1.00)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.Math.Mult(V.Local.fQty, 10000, V.Local.sFormatQty)
+	F.Intrinsic.String.LPad(V.Local.sFormatQty, "0", 13, V.Local.sFormatQty)
+		
+	'Subtotal.. for some reason there isnt a field that will tell us what the customer paid, so we must grab the price and subtract the discount from it
+	
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/price", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+		V.Local.fPrice.Set(V.Local.sTemp.Float)
+		
+	F.Intrinsic.Control.Else
+		V.Local.fPrice.Set(0.00)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/total_discount", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck,V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+		V.Local.fDiscount.Set(V.Local.sTemp.Float)
+		
+	F.Intrinsic.Control.Else
+		V.Local.fDiscount.Set(0.00)
+		
+	F.Intrinsic.Control.EndIf
+	
+	'Actual price is the price minus the discount
+	F.Intrinsic.Math.Sub(V.Local.fPrice, V.Local.fDiscount, V.Local.fPrice)
+	
+	F.Intrinsic.Math.Mult(V.Local.fPrice, 1000000, V.Local.sFormatPrice)
+	F.Intrinsic.String.LPad(V.Local.sFormatPrice, "0", 16, V.Local.sFormatPrice)
+	
+	'BP
+	f.Intrinsic.Control.If(v.Local.iCnt,=,0)
+		F.Intrinsic.String.LPad(V.Local.iCounter, "0", 3, V.Local.sLine)
+		'Add line information to the Web Importer information:
+		F.Data.DataTable.AddRow("ORDUPLLines", "LineNumber", V.Local.sLine, "PartNumber", V.Local.sPartNo, "PartRev", V.Local.sPartRev, "PartLoc", "  ", "PartDesc", V.Local.sPartDesc, "QtyOrdered", V.Local.sFormatQty, "QuotedPrice", V.Local.sFormatPrice, "UM", "EA","TaxStatusFlag","E")
+	
+		'Add in the line information into the GSS table:
+		F.Data.DataTable.AddRow("dtGSSOrders", "ORDER_WEB_ID", V.Args.ORDERID, "ORDER_LN", V.Local.sLine, "QTY_LINE", V.Local.fQty, "PART_NO", V.Local.sSKU.Trim, "LOC", "  ", "INCOMING_PRICE", V.Local.fPrice, "LINE_KEY", -1)
+	f.Intrinsic.Control.Else
+		F.Intrinsic.Math.Add(V.Local.iCnt, 1, V.Local.iCnt)
+		F.Intrinsic.String.LPad(V.Local.iCnt, "0", 3, V.Local.sLine)
+		'Add line information to the Web Importer information:
+		F.Data.DataTable.AddRow("ORDUPLLines", "LineNumber", V.Local.sLine, "PartNumber", V.Local.sPartNo, "PartRev", V.Local.sPartRev, "PartLoc", "  ", "PartDesc", V.Local.sPartDesc, "QtyOrdered", V.Local.sFormatQty, "QuotedPrice", V.Local.sFormatPrice, "UM", "EA","TaxStatusFlag","E")
+	
+		'Add in the line information into the GSS table:
+		F.Data.DataTable.AddRow("dtGSSOrders", "ORDER_WEB_ID", V.Args.ORDERID, "ORDER_LN", V.Local.sLine, "QTY_LINE", V.Local.fQty, "PART_NO", V.Local.sSKU.Trim, "LOC", "  ", "INCOMING_PRICE", V.Local.fPrice, "LINE_KEY", -1)
+	f.Intrinsic.Control.EndIf
+	
+	
+	F.Intrinsic.String.Build("{0}{1}Information for line {2} captured.", V.Global.sRegLog, V.Ambient.NewLine, V.Local.iCounter, V.Global.sRegLog)
+	
+	'=========BP=============
+	
+	'add zero-cost line	
+	v.Local.iCnt2.Set(1)
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/properties/[{2}]/value", V.Args.Head.Long, V.Local.iCounter,v.Local.iCnt2, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck, V.Local.bNodeExists)
+	
+	F.Intrinsic.Control.DoUntil(V.Local.bNodeExists, =, False)
+		F.Intrinsic.Control.If(V.Local.bNodeExists)
+			F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+			F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+			F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+			F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+			F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+			f.Intrinsic.String.Split(v.Local.sTemp,"@",v.Local.sTemp)
+			f.Intrinsic.Control.If(v.Local.sTemp.UBound,<>,0)
+				f.Intrinsic.String.Split(v.Local.sTemp(1),")",v.Local.sTemp)
+				v.Local.sPartNo.Set(v.Local.sTemp(0))
+				f.Intrinsic.Control.If(v.Local.iCnt,=,0)
+					F.Intrinsic.Math.Add(V.Local.iCounter, 1, V.Local.iCnt)
+				f.Intrinsic.Control.Else
+					F.Intrinsic.Math.Add(V.Local.iCnt, 1, V.Local.iCnt)
+				f.Intrinsic.Control.EndIf
+				
+				F.Intrinsic.String.LPad(V.Local.iCnt, "0", 3, V.Local.sLine)
+				F.Intrinsic.String.RPad(v.Local.sPartNo," ", 17, V.Local.sPartNo)
+				F.Intrinsic.String.RPad(""," ", 3, V.Local.sPartRev)
+				'F.Intrinsic.Math.Mult(1, 10000, V.Local.sFormatQty)
+				F.Intrinsic.String.LPad(V.Local.sFormatQty, "0", 13, V.Local.sFormatQty)
+				F.Intrinsic.String.LPad("0", "0", 16, V.Local.sFormatPrice)
+				
+				F.Data.DataTable.AddRow("ORDUPLLines", "LineNumber", V.Local.sLine, "PartNumber", V.Local.sPartNo, "PartRev", V.Local.sPartRev, "PartLoc", "  ", "PartDesc", v.Local.sPartNo, "QtyOrdered", V.Local.sFormatQty, "QuotedPrice", V.Local.sFormatPrice, "UM", "EA","TaxStatusFlag","E","PriceFlag","1")
+				F.Data.DataTable.AddRow("dtGSSOrders", "ORDER_WEB_ID", V.Args.ORDERID, "ORDER_LN", V.Local.sLine, "QTY_LINE", "1", "PART_NO", v.Local.sPartNo.Trim, "LOC", "  ", "INCOMING_PRICE", 0, "LINE_KEY", -1)
+			f.Intrinsic.Control.EndIf
+		F.Intrinsic.Control.EndIf
+		F.Intrinsic.Math.Add(V.Local.iCnt2, 1, V.Local.iCnt2)
+		F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/properties/[{2}]/value", V.Args.Head.Long, V.Local.iCounter,v.Local.iCnt2, V.Local.sPathCheck)
+		F.Communication.JSON.HasXPath(V.Local.sPathCheck, V.Local.bNodeExists)
+	F.Intrinsic.Control.Loop
+	
+	'add T-shirt size to Customer Part field
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]/variant_title", V.Args.Head.Long, V.Local.iCounter, V.Local.sPathCheck)
+	F.Communication.JSON.HasXPath(V.Local.sPathCheck, V.Local.bNodeExists)
+	F.Intrinsic.Control.If(V.Local.bNodeExists)
+		F.Communication.JSON.SetProperty("XPath",V.Local.sPathCheck)
+		F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+		F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+		v.Local.sSize.Set(v.Local.sTemp)
+		F.Intrinsic.String.GSSPartString(v.Local.sPartNo,v.Local.sPartRev,V.Local.sPartnRev)
+		f.Intrinsic.Control.If(v.Local.sSize.Trim,<>,"")
+			f.Data.Datatable.AddRow("dtSize","Part",v.Local.sPartnRev,"Size",v.Local.sSize)
+		f.Intrinsic.Control.EndIf
+		
+	F.Intrinsic.Control.EndIf
+	'=======================
+	F.Intrinsic.Math.Add(V.Local.iCounter, 1, V.Local.iCounter)
+	F.Intrinsic.Control.EndIf
+	F.Intrinsic.String.Build("/json/orders/[{0}]/line_items/[{1}]", V.Args.Head.Long, V.Local.iCounter, V.Local.sLinePath)
+	F.Communication.JSON.HasXPath(V.Local.sLinePath, V.Local.bNodeExists)
+F.Intrinsic.Control.Loop
+
+'===============BP=====================
+
+F.Intrinsic.String.Build("/json/orders/[{0}]/total_tax", V.Args.Head.Long,V.Local.sLinePath)
+F.Communication.JSON.HasXPath(V.Local.sLinePath, V.Local.bNodeExists)
+
+F.Intrinsic.Control.If(V.Local.bNodeExists)
+	F.Communication.JSON.SetProperty("XPath",V.Local.sLinePath)
+	F.Communication.JSON.ReadProperty("XText",V.Local.sTemp)
+	F.Intrinsic.String.Replace(V.Local.sTemp,V.Ambient.DblQuote,"",V.Local.sTemp)
+	F.Intrinsic.String.Replace(V.Local.sTemp,"\n",V.Ambient.NewLine,V.Local.sTemp)
+	F.Intrinsic.String.Replace(V.Local.sTemp,"\","",V.Local.sTemp)
+	V.Local.fTax.Set(V.Local.sTemp.Float)
+	
+	f.Intrinsic.Control.If(v.Local.fTax,<>,0)
+		F.Intrinsic.String.RPad("Tax"," ", 17, V.Local.sPartNo)
+		F.Intrinsic.String.RPad(""," ", 3, V.Local.sPartRev)
+		f.Intrinsic.Control.If(v.Local.iCnt,<>,0)
+			F.Intrinsic.Math.Add(V.Local.iCnt, 1, V.Local.iCounter)
+		f.Intrinsic.Control.EndIf
+		F.Intrinsic.String.LPad(V.Local.iCounter, "0", 3, V.Local.sLine)
+		F.Intrinsic.Math.Mult(1, 10000, V.Local.sFormatQty)
+		F.Intrinsic.String.LPad(V.Local.sFormatQty, "0", 13, V.Local.sFormatQty)
+		F.Intrinsic.Math.Mult(V.Local.fTax, 1000000, V.Local.sFormatPrice)
+		F.Intrinsic.String.LPad(V.Local.sFormatPrice, "0", 16, V.Local.sFormatPrice)
+		f.Intrinsic.String.Build("{0}{1}",v.Local.sPartNo,v.Local.sPartRev,v.Local.sSKU)
+		F.Data.DataTable.AddRow("ORDUPLLines", "LineNumber", V.Local.sLine, "PartNumber", V.Local.sPartNo, "PartRev", V.Local.sPartRev, "PartLoc", "  ", "PartDesc", "Total Tax", "QtyOrdered", V.Local.sFormatQty, "QuotedPrice", V.Local.sFormatPrice, "UM", "EA","TaxStatusFlag","E")
+		F.Data.DataTable.AddRow("dtGSSOrders", "ORDER_WEB_ID", V.Args.ORDERID, "ORDER_LN", V.Local.sLine, "QTY_LINE", "1", "PART_NO", V.Local.sSKU.Trim, "LOC", "  ", "INCOMING_PRICE", V.Local.fTax, "LINE_KEY", -1)
+	f.Intrinsic.Control.EndIf
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.String.Build("{0}{1}{1}Information for the order lines has been processed.{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Local.iCounter, V.Global.sRegLog)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.ProcessingLines.End
+
+Program.Sub.CharacterCheck.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare(String, "")
+V.Local.sEncoding.Declare(String, "")
+V.Local.sDescription.Declare(String, "")
+V.Local.bExists.Declare(Boolean, False)
+
+'We are using this subrioutine to encode the description and the the part name, since they enjoy copying and pasting stuff from questionable sources and some special characters break the API request.
+F.Intrinsic.Variable.ArgExists("Value", V.Local.bExists)
+
+F.Intrinsic.Control.If(V.Local.bExists, =, True, and, V.Args.Value, <>,"")
+	'At the time of creation, GAB is unable to read/identify left and right double quotes, and the customer is using them, so to get around these, we encode to URL, and replace the values with those of regular double quotes, and then decode back to a regular string.
+	V.Local.sEncoding.Set(V.Args.Value)
+		
+	F.Communication.Misc.EncodeToString(3, V.Local.sEncoding, V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%93", "%22", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%94", "%22", V.Local.sEncoding)
+	
+	'Special iterations of A
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%80", "A", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%81", "A", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%82", "A", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%83", "A", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%84", "A", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%85", "A", V.Local.sEncoding)
+	
+	'Special iterations of C
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%87", "C", V.Local.sEncoding)
+	
+	'Special iterations of E
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%88", "E", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%89", "E", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8a", "E", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8b", "E", V.Local.sEncoding)
+	
+	'Special iterations of I
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8c", "I", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8d", "I", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8e", "I", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%8f", "I", V.Local.sEncoding)
+	
+	'Special iterations of O
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%92", "O", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%93", "O", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%94", "O", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%95", "O", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%96", "O", V.Local.sEncoding)
+	
+	'Special iterations of U
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%99", "U", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%9a", "U", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%9b", "U", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%9c", "U", V.Local.sEncoding)
+	
+	'Special iteration of Y
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%9d", "Y", V.Local.sEncoding)
+	
+	'special iterations of a
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a0", "a", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a1", "a", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a2", "a", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a3", "a", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a4", "a", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a5", "a", V.Local.sEncoding)
+	
+	'Special iterations of c
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a7", "c", V.Local.sEncoding)
+	
+	'Special iterations of e
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a8", "e", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%a9", "e", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%aa", "e", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%ab", "e", V.Local.sEncoding)
+	
+	'Special iterations of i
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%ac", "i", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%ad", "i", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%ae", "i", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%af", "i", V.Local.sEncoding)
+	
+	'Special iteration of n
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b1", "n", V.Local.sEncoding)
+	
+	'Special iteration of o
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b2", "o", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b3", "o", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b4", "o", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b5", "o", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b6", "o", V.Local.sEncoding)
+	
+	'Special iteration of u
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%b9", "u", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%ba", "u", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%bb", "u", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%bc", "u", V.Local.sEncoding)
+	
+	'Special iteration of y
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%bd", "y", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c3%bf", "y", V.Local.sEncoding)
+	
+	
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c2%ba", "", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%0a", V.Ambient.NewLine, V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%a0", "", V.Local.sEncoding)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%0d", "", V.Local.sEncoding)
+	
+	'? (CIRCLED D)
+	F.Intrinsic.String.Replace(V.Local.sEncoding,"%C2%A9","",V.Local.sEncoding)
+	
+	'? (CIRCLED M)
+    F.Intrinsic.String.Replace(V.Local.sEncoding, "%C2%AE", "", V.Local.sEncoding)
+    
+	'? (CIRCLED R)
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%ae", "", V.Local.sEncoding)
+	
+	'A`
+	F.Intrinsic.String.Replace(V.Local.sEncoding, "%c2", "", V.Local.sEncoding)
+	
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%B0", "degdegdeg", V.Local.sEncoding)
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%96", "longdashlongdash", V.Local.sEncoding)
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%92", "singlequotesinglequote", V.Local.sEncoding)
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%0a", V.Ambient.NewLine, V.Local.sEncoding)
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%a0", "", V.Local.sEncoding)
+'	F.Intrinsic.String.Replace(V.Local.sEncoding, "%0d", "", V.Local.sEncoding)
+	
+	F.Communication.Misc.DecodeToString(3, V.Local.sEncoding, V.Local.sDescription)
+	
+F.Intrinsic.Control.Else
+	V.Local.sDescription.Set("")
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Variable.AddRV("Return", V.Local.sDescription)
+
+F.Intrinsic.Control.Catch
+
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+
+F.Communication.Misc.DecodeToString(3, V.Local.sEncoding, V.Local.sDescription)
+F.Intrinsic.Variable.AddRV("Return", V.Local.sDescription)
+
+F.Intrinsic.Control.EndTry
+Program.Sub.CharacterCheck.End
+
+Program.Sub.ProcessComplete.Start
+F.Intrinsic.Control.Try
+V.Local.sEmailBody.Declare(String, "")
+V.Local.sErrors.Declare(String, "")
+V.Local.iUser.Declare(Long, 0)
+
+'We will be saving the information back into the database and sending out an email to the selected users
+
+F.Intrinsic.String.Build("{0}{1}Order creation completed. Recording cross reference to custom tables.{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+
+F.ODBC.Connection!conx.OpenCompanyConnection
+
+F.Data.DataView.Create("dtGSSOrders", "dvNewOrders", 22, "[LINE_KEY] = -1", "")
+F.Data.DataView.ToDataTable("dtGSSOrders", "dvNewOrders", "dtOrdersToSave", True)
+
+F.Data.DataTable.SaveToDB("dtOrdersToSave", "conx", "GCG_6450_ORDS_XREF", "LINE_KEY", 128)
+
+F.Data.DataTable.Close("dtOrdersToSave")
+
+F.ODBC.Connection!conx.Close
+
+F.Intrinsic.String.Build("{0}{1}Generating and sending notification email to websales@magnusonsuperchargers.com{1}{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+
+F.Data.DataView.ToDataTableDistinct("dtGSSOrders", "dvNewOrders", "dtEmailings", "ORDER_WEB_ID*!*CUST_ACCT*!*COMP_NAME*!*CUST_GSS_NO*!*ORDER_NO")
+
+F.Intrinsic.Control.If(V.DataTable.dtEmailings.RowCount, >, 0)
+	F.Data.DataTable.AddColumn("dtEmailings", "FIRST", "String", "Web order")
+	F.Data.DataTable.AddColumn("dtEmailings", "SECOND", "String", "for online customer with ID")
+	F.Data.DataTable.AddColumn("dtEmailings", "THIRD", "String", "for company")
+	F.Data.DataTable.AddColumn("dtEmailings", "FOURTH", "String", "created for GSS customer number")
+	F.Data.DataTable.AddColumn("dtEmailings", "FIFTH", "String", "under GSS sales order number")
+	F.Data.DataTable.AddColumn("dtEmailings", "LAST", "String", ".")
+	
+	F.Data.DataView.Create("dtEmailings", "dvReporter", 22, "[ORDER_NO] <> 'ERROR'", "")
+	
+	F.Data.DataView.ToString("dtEmailings", "dvReporter", "FIRST*!*ORDER_WEB_ID*!*SECOND*!*CUST_ACCT*!*THIRD*!*COMP_NAME*!*FOURTH*!*CUST_GSS_NO*!*FIFTH*!*ORDER_NO*!*LAST", " ", V.Ambient.NewLine, V.Local.sEmailBody)
+	
+	F.Data.DataView.Close("dtEmailings", "dvReporter")
+	
+	'Extracting orders where we had issues
+	F.Data.DataView.Create("dtEmailings", "dvErrors", 22, "[ORDER_NO] = 'ERROR'", "")
+	
+	F.Intrinsic.Control.If(V.DataView.dtEmailings!dvErrors.RowCount, >, 0)
+	
+		F.Data.DataView.SetValue("dtEmailings", "dvErrors", -1, "FOURTH", "had issues creating order in Global Shop.")
+		
+		F.Data.DataView.ToString("dtEmailings", "dvErrors", "FIRST*!*ORDER_WEB_ID*!*SECOND*!*CUST_ACCT*!*THIRD*!*COMP_NAME*!*FOURTH", " ", V.Ambient.NewLine, V.Local.sErrors)
+		
+		F.Data.DataView.Close("dtEmailings", "dvErrors")
+		
+		F.Intrinsic.String.Build("This is an email notification that orders have been processed into Global Shop from the Magnuson Shopify Website on {0}{1}{1}{2}{1}{1}{1}Some errors were found when attempting to create the following web orders:{1}{3}{1}{1}The web importer log can provide more information on the issues for the order creation.{1}{1}{1}You can find the logs for the process with details in {1}{4}{1}{1}{1}Have a good day!", V.Ambient.Now, V.Ambient.NewLine, V.Local.sEmailBody, V.Local.sErrors, V.Global.sRegFile, V.Local.sEmailBody)
+		
+	F.Intrinsic.Control.Else
+	
+		F.Intrinsic.String.Build("This is an email notification that orders have been processed into Global Shop from the Magnuson Shopify Website on {0}{1}{1}{2}{1}{1}You can find the logs with details in {3}{1}{1}{1}Have a good day!", V.Ambient.Now, V.Ambient.NewLine, V.Local.sEmailBody, V.Global.sRegFile, V.Local.sEmailBody)
+		
+	F.Intrinsic.Control.EndIf
+	
+	F.Global.Security.GetUserId(V.Caller.User, V.Caller.CompanyCode, V.Local.iUser)
+	
+	F.Global.Messaging.QueueMessage(V.Caller.CompanyCode, V.Local.iUser, "GCG6450", "AUTOMATED: WEB ORDERS HAVE BEEN CREATED IN GSS", "donotreply@magnusonsuperchargers.com*!*DO NOT REPLY", "websales@magnusonsuperchargers.com", V.Local.sEmailBody)
+	'F.Global.Messaging.QueueMessage(V.Caller.CompanyCode, V.Local.iUser, "GCG6450", "AUTOMATED: WEB ORDERS HAVE BEEN CREATED IN GSS", "donotreply@magnusonsuperchargers.com*!*DO NOT REPLY", "fquiroz@gssmail.com", V.Local.sEmailBody)
+
+F.Intrinsic.Control.EndIf
+
+F.Data.DataTable.Close("dtEmailings")
+F.Data.DataView.Close("dtGSSOrders", "dvNewOrders")
+F.Data.DataTable.Close("dtGSSOrders")
+
+F.Intrinsic.Control.CallSub(CloseProgram)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.CallSub(CloseProgram)
+F.Intrinsic.Control.EndTry
+Program.Sub.ProcessComplete.End
+
+Program.Sub.CloseProgram.Start
+F.Intrinsic.Control.Try
+V.Local.sMessage.Declare(String, "")
+V.Local.bCheck.Declare(Boolean, False)
+
+'We want to check if any orders were made to print the files that we generated
+F.Intrinsic.Control.If(V.Global.bNewOrders)
+	F.Intrinsic.String.Build("{0}{1}{1}Process completed for current orders. Program is closing down.{1}{1}----------------------------------------------------------------------------------------------{1}", V.Global.sRegLog, V.Ambient.NewLine, V.Global.sRegLog)
+	F.Intrinsic.Control.CallSub(PrintLogs)
+	
+F.Intrinsic.Control.EndIf
+
+'Delete the 'isrunning' file
+F.Intrinsic.File.Exists(V.Global.sIsRunning, V.Local.bCheck)
+F.Intrinsic.Control.If(V.Local.bCheck)
+	F.Intrinsic.File.DeleteFile(V.Global.sIsRunning)
+F.Intrinsic.Control.EndIf
+
+'If this was called from the menu item, we want to notify them that the process is completed
+F.Intrinsic.Control.If(V.Caller.Switches, =, "M")
+	F.Intrinsic.UI.CloseWaitDialog
+	F.Intrinsic.String.Build("Process completed for web orders.{0}Look for log file in{0}{1}", V.Ambient.NewLine, V.Global.sRegFile, V.Local.sMessage)
+	F.Intrinsic.UI.Msgbox(V.Local.sMessage, "ORDERS CREATED!")
+F.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.CallSub(Unload)
+
+F.Intrinsic.Control.Catch
+F.Intrinsic.Control.CallSub(ErrorLog, "Subroutine", V.Ambient.CurrentSubroutine, "ErrorDesc", V.Ambient.ErrorDescription, "ErrorNo", V.Ambient.ErrorNumber)
+F.Intrinsic.Control.EndTry
+Program.Sub.CloseProgram.End
+
+Program.Sub.Comments.Start
+${$5$}$2.0.0.0$}$2
+${$6$}$bpham$}$20220726115931312$}$Di0riF4Q5RIv6jxva5zSWBaTvp+T0Dt6lGUNykKSBDfDDa/KMqieuGvM8AKs0f3gzcMaDJBKWLU=
+Program.Sub.Comments.End
