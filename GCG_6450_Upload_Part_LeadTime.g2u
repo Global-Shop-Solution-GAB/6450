@@ -1,0 +1,146 @@
+﻿Program.Sub.ScreenSU.Start
+Gui.Form..Create
+Gui.Form..Caption("Please select a file to process")
+Gui.Form..Size(7470,1155)
+Gui.Form..MinX(0)
+Gui.Form..MinY(0)
+Gui.Form..Position(0,0)
+Gui.Form..BackColor(-2147483633)
+Gui.Form..MousePointer(0)
+Gui.Form..Sizeable(False)
+Gui.Form..Event(UnLoad,Form_UnLoad)
+Gui.Form.cmdFile.Create(Button)
+Gui.Form.cmdFile.Size(420,345)
+Gui.Form.cmdFile.Position(6900,60)
+Gui.Form.cmdFile.Caption("^")
+Gui.Form.cmdFile.Event(Click,cmdFile_Click)
+Gui.Form.txtFilePath.Create(TextBox,"",True,6735,300,0,90,75,True,0,"Arial",8,-2147483643,1)
+Gui.Form.cmdProcess.Create(Button)
+Gui.Form.cmdProcess.Size(855,375)
+Gui.Form.cmdProcess.Position(2835,405)
+Gui.Form.cmdProcess.Caption("Process")
+Gui.Form.cmdProcess.Event(Click,cmdProcess_Click)
+Program.Sub.ScreenSU.End
+
+Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Bryan Pham
+'August 2022
+'Customer: MAGNUSON PRODUCTS LLC
+'Call: MAG050-111020211133-0
+'This script is to upload part leadtime and use it for calculating order promised and due date
+gui.Form..Show
+Program.Sub.Main.End
+
+Program.Sub.cmdProcess_Click.Start
+f.Intrinsic.Control.Try
+v.Local.sError.Declare
+v.Local.sFile.Declare
+V.Local.sCol.Declare
+V.Local.i.Declare
+V.Local.iRow.Declare
+V.Local.sRow.Declare
+v.Local.iWorksheet.Declare
+v.Local.iCnt.Declare
+V.Local.sWSNames.Declare
+v.Local.sTable.Declare
+v.Local.sSQL.Declare
+f.ODBC.Connection!con.OpenCompanyConnection
+f.Intrinsic.UI.InvokeWaitDialog("Updating data...","Please wait")
+gui.Form..Enabled(false)
+V.Local.sFile.set(V.Screen.Form!txtFilePath.Text)
+'create DT for part and leadtime
+f.Data.Datatable.Create("dtPart_LeadTime")
+f.Data.DataTable.AddColumn("dtPart_LeadTime","PART","String")
+f.Data.DataTable.AddColumn("dtPart_LeadTime","LeadTime","Float")
+
+'open Excel spreadsheet
+F.Automation.MSExcel.CreateAppObject("MSExcel")
+F.Automation.MSExcel.OpenWorkbook("MSExcel","Workbook",V.Local.sFile)
+f.Automation.MSExcel.GetWorksheetCount("Workbook",v.Local.iWorksheet)
+
+Function.Automation.MSExcel.EnumerateWorksheets("Workbook",V.Local.sWSNames)
+f.Intrinsic.String.Split(v.Local.sWSNames,"*!*",v.Local.sWSNames)
+'loop thru each sheet
+f.Intrinsic.Control.For(v.Local.iCnt,0,v.Local.sWSNames.UBound,1)
+
+	f.Intrinsic.Math.Add(v.Local.iCnt,1,v.Local.iCnt)
+	F.Automation.MSExcel.OpenWorksheet("Workbook","Worksheet",v.Local.iCnt)
+	F.Automation.MSExcel.RowCount("Worksheet",V.Local.iRow)
+	F.Intrinsic.String.Split(V.Local.sFile,"$!$",V.Local.sRow)
+	f.Intrinsic.Math.Sub(v.Local.iCnt,1,v.Local.iCnt)
+	'loop thru each row
+	F.Intrinsic.Control.For(V.Local.i,2,V.Local.iRow,1)
+		Function.Automation.MSExcel.ReadRow("Worksheet",V.Local.i,1,4,V.Local.sRow)
+		F.Intrinsic.String.Split(V.Local.sRow,"*!*",V.Local.sCol)
+		f.Intrinsic.Control.If(V.Local.sCol(0).trim,<>,"",and,V.Local.sCol(1).trim,<>,"")
+			f.Data.Datatable.AddRow("dtPart_LeadTime","PART",V.Local.sCol(0),"LeadTime",V.Local.sCol(1))
+		f.Intrinsic.Control.EndIf
+	F.Intrinsic.Control.Next(V.Local.i)
+	'clear all data before upload new batch
+	F.ODBC.Connection!con.Execute("delete from GCG_6450_PART_LEADTIME")
+	F.Data.DataTable.SaveToDB("dtPart_LeadTime","con","GCG_6450_PART_LEADTIME","","128","PART@!@PART*!*LeadTime@!@LeadTime")
+	
+	f.Data.Datatable.DeleteRow("dtPart_LeadTime")
+	Function.Automation.Generic.DestroyObject("Worksheet")
+f.Intrinsic.Control.Next(v.Local.iCnt)
+'destroy excel object when done
+	Function.Automation.Generic.DestroyObject("Workbook")
+	Function.Automation.Generic.DestroyObject("MSExcel")
+	f.Intrinsic.UI.CloseWaitDialog
+	f.Intrinsic.UI.Msgbox("Upload done successfully.","Notification!")
+	f.Intrinsic.Control.CallSub(Form_UnLoad)
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(Form_UnLoad)
+	F.Intrinsic.Control.End	
+F.Intrinsic.Control.EndTry
+Program.Sub.cmdProcess_Click.End
+
+Program.Sub.cmdFile_Click.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+
+V.Local.sFile.Declare(String)
+
+F.Intrinsic.UI.ShowOpenFileDialog("","xls|*.xlsx|*.xls",,V.Local.sFile)
+F.Intrinsic.Control.If(V.Local.sFile,=,"***CANCEL***")
+	F.Intrinsic.Control.End
+
+F.Intrinsic.Control.EndIf
+Gui.Form.txtFilePath.Text(V.Local.sFile)
+
+F.Intrinsic.Control.ExitSub
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	f.Intrinsic.Control.CallSub(Form_UnLoad)
+	F.Intrinsic.Control.End	
+F.Intrinsic.Control.EndTry
+Program.Sub.cmdFile_Click.End
+
+Program.Sub.Form_UnLoad.Start
+f.Intrinsic.Control.Try
+	v.Local.sError.Declare
+
+	F.Intrinsic.Control.If(V.ODBC.con.State,=,1)
+		F.ODBC.Connection!con.close
+	F.Intrinsic.Control.EndIf
+	
+	f.Intrinsic.Control.End
+
+F.Intrinsic.Control.Catch
+	F.Intrinsic.String.Build("Project: {0}{1}Subroutine: {2}{1}Subroutine called from:{6}{1}Error Occurred: {3}{1}Description: {4}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,v.Ambient.SubroutineCalledFrom,V.Local.sError)
+	F.Intrinsic.UI.Msgbox(V.Local.sError)
+	F.Intrinsic.Control.End	
+F.Intrinsic.Control.EndTry
+Program.Sub.Form_UnLoad.End
+
+Program.Sub.Comments.Start
+${$5$}$2.0.0.0$}$2
+${$6$}$bpham$}$20220909101538737$}$Di0riF4Q5RIv6jxva5zSWBaTvp+T0Dt6uGm3VUilS6DgGj+8Hmw8ImC4WgdxKTFtQiQd2y6vdtI=
+Program.Sub.Comments.End
